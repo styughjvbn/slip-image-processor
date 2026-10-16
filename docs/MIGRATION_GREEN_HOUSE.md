@@ -31,7 +31,7 @@ green-house/backend/src/main/java/com/greenhouse/backend/
   → 기존 파일 저장소·기존 응답
 ```
 
-아직 모듈을 설치하지 않았다면 [Ubuntu 소스 모듈 설치 가이드](MONOREPO_INTEGRATION.md)를 먼저 따릅니다. 성능·메모리 수치는 [PERFORMANCE.md](PERFORMANCE.md), 실제 검증 범위는 [VALIDATION.md](../VALIDATION.md)에서 확인합니다. 이번 연동의 기본 참고 문서는 **현재 문서**입니다.
+아직 모듈을 설치하지 않았다면 [Ubuntu 소스 모듈 설치 가이드](MONOREPO_INTEGRATION.md)를 먼저 따릅니다. 동작 원리·결과·옵션·검증·성능은 [동작·검증·성능](PROCESSING.md)에서 확인합니다. 이번 연동의 기본 참고 문서는 **현재 문서**입니다.
 
 ## 1. 적용 기준과 범위
 
@@ -286,67 +286,23 @@ var report = result.report();
 
 ## 6. 처리 옵션과 결과 계약
 
-출력 모드는 `withOutputMode(OutputMode.PRODUCTION/REVIEW/ALL)`로 선택합니다. 기존 호출과 파일명을 보존하려고 기본값은 ALL을 유지했습니다. 운영에서는 PRODUCTION을 명시적으로 사용하세요.
-
-| 모드 | 생성 파일 |
-|---|---|
-| PRODUCTION | 01-corrected + 실제 검출된 표/종이 PNG + 보고서 |
-| REVIEW | PRODUCTION + 05-row-decisions + 06-paper-contours |
-| ALL | REVIEW + 02-lines + 03-horizontal + 04-vertical + 07-paper-mask |
-
-미선택 overlay는 복제·그리기·인코딩부터 생략합니다. 보고서·표/종이 판정과 공통 출력 PNG는 모드에 따라 바뀌지 않습니다. CLI는 `--workers=2 --queue-capacity=4 --opencv-threads=1 --output-mode=PRODUCTION`으로 같은 library 실행기를 사용하며 완료된 결과부터 저장합니다. 완료 순서는 달라도 summary/갤러리는 파일명 순으로 정리합니다. 병렬 배치의 milliseconds는 대기와 저장 시간을 포함하므로 순수 엔진 벤치마크로 사용하지 않습니다.
-
+옵션·출력 모드·파일별 의미·좌표계와 판정 한계의 기준은 [동작·검증·성능 문서의 2절](PROCESSING.md#2-결과와-조정-값)입니다. 운영에서는 기본 ALL 대신 PRODUCTION을 명시합니다.
 
 ```java
 ProcessingOptions options = ProcessingOptions.defaults()
-        .withMaxDimension(1600)
-        .withRotation(-1); // -1=AUTO, 또는 EXIF 반영 후 추가 시계 방향 0/90/180/270도
-
+        .withMaxDimension(2200)
+        .withRotation(-1)
+        .withOutputMode(OutputMode.PRODUCTION);
 ProcessingResult result = processor.process(originalBytes, options);
-byte[] corrected = result.images().get("01-corrected.png");
-var papers = result.report().papers();
-var tables = result.report().tables();
-// paper-01.png 등은 실제 검출됐을 때만 존재합니다.
 ```
 
-| 옵션 | 기본값 | 의미 |
-|---|---:|---|
-| maxDimension | 2200 | 입력 축소 시 긴 변 제한, 800–3000; 작은 입력은 확대하지 않음 |
-| protectedTopRows | 2 | 표의 상단 보존 행 수, 1–10 |
-| ignoreRepeatedPrint | true | 반복 인쇄 패턴 제외 추정 |
-| minimumInkRatio | 0.00035 | 유효 잉크 비율의 빈 행 판정 기준, 0–0.1 |
-| minimumComponentArea | 8 | 기본 크기 기준 최소 연결 성분 면적, 2–1000 |
-| rotationDegrees | -1 | 자동 또는 0/90/180/270 |
+빈 행 제거는 표별 `table-XX-compacted.png`에만 적용됩니다. `01-corrected.png`는 전체 보정 사진이고 `paper-XX.png`는 보이는 종이 영역입니다. 보고서의 warnings/reviewRequired를 문서 승인이나 판매 상태로 취급하지 않습니다. 결과 PNG 바이트와 저장 메모리는 호출자가 관리합니다.
 
-전체 옵션은 `new ProcessingOptions(maxDimension, protectedTopRows, ignoreRepeatedPrint, minimumInkRatio, minimumComponentArea, rotationDegrees)`로 지정할 수 있습니다.
+## 7. 이식 후 문서·코드 관리
 
-`min(원본 긴 변, maxDimension) / min(원본 긴 변, 2200)`을 공간 배율로 사용합니다. 거리·커널·행 정규화 높이는 배율, 최소 연결 성분 면적은 배율²를 적용합니다. 이미지 기반 비율·각도·색상·잉크 비율은 유지합니다. 내부 최대 900px 종이 분석은 해당 좌표계 배율을 별도로 적용합니다. 저해상도의 정보 손실로 크기별 빈 행 판정이 달라질 수 있습니다.
+이식이 끝나면 코어 소스·테스트와 사용하는 코드를 Green House에서 함께 수정합니다. `docs/PROCESSING.md`도 Green House의 `docs/image-processing/PROCESSING.md` 등에 복사하고, 호스트 문서 목차에 연결합니다. 설치 스크립트는 기술 문서를 자동 복사하지 않습니다.
 
-반환값은 일반 Java record와 PNG `byte[]`이며 native `Mat`은 호출 종료 시 코어가 해제합니다. 호출자가 `Mat.release()`를 호출할 필요는 없습니다. 다만 `byte[]`까지 깊은 불변 값은 아니므로 공유된 결과 배열을 수정하지 마세요. 결과를 장기간 메모리 캐시에 보관하면 PNG·중간 결과 용량이 누적됩니다.
-
-- `01-corrected.png`: 전체 보정 영상. 빈 행을 실제 잘라내지 않습니다.
-- `table-XX-compacted.png`: 해당 표에서 빈 행을 실제 제거한 영상.
-- `paper-XX.png`: 배경이 투명한 RGBA 전표별 영상. 가려진 부분은 복원하지 않습니다.
-- `05-row-decisions.png`, `06-paper-contours.png`, `07-paper-mask.png`: 판정 검토용 영상.
-- 표/행/종이 좌표: 최종 보정 영상 기준. 종이 PNG의 좌상단은 해당 `bounds.x/y`입니다.
-- `documentCorners`: 검출 성공 시 EXIF 반영 후 원본 영상 좌표. 최종 영상 좌표와 다릅니다.
-- `rotation.reviewRequired`, `papers[].reviewRequired`, `warnings`: 검토 필요 정보. 문서 승인·판매 상태 capability와 혼합하지 않습니다.
-
-## 7. 소스 복사로 이식해야 할 때
-
-소스 모듈을 별도로 두기 어려워 feature 패키지 안에 직접 합쳐야 할 때만 선택합니다. 권장 소스 모듈 방식과 구분합니다. **코어의 main 소스 전체와 test 소스만** 복사하고 데모·루트 실행 클래스·application.yml·부모 POM은 복사하지 않습니다.
-
-| 원본 패키지 | 대상 패키지 예시 |
-|---|---|
-| `kr.co.slip.api` | `<base>.sales.document.api.image` |
-| `kr.co.slip.execution` | `<base>.sales.document.integration.image.execution` |
-| `kr.co.slip.opencv` | `<base>.sales.document.integration.image.opencv` |
-
-`package`와 일반/static `import`를 함께 변경하고 테스트도 같은 대응 패키지로 옮깁니다. `PublicApiBoundaryTest`의 허용 API 패키지 문자열도 변경합니다. `PixelScale`과 `PaperSeparator`는 package-private이므로 OpenCV 구현 파일은 같은 패키지에 둡니다. `SlipProcessors` factory의 execution import도 바꾸고 제한된 실행기와 `@Bean(destroyMethod="close")` 구성을 유지합니다.
-
-호스트 빌드에 `org.openpnp:opencv:4.9.0-0` 의존성 하나를 추가하고 JUnit 테스트는 기존 테스트 도구를 사용합니다. feature API를 최상위 모듈 외부에 자동 공개하지 않습니다. 다른 최상위 모듈이 실제로 사용하는 업무 계약만 `sales/api/document`에 정의하고 기존 정확한 타입/메서드 검사를 갱신합니다.
-
-이 방식은 호스트가 알고리즘 소스·수정 이력을 직접 소유하게 됩니다. 버전 업데이트를 받기 위해서는 소스 차이를 직접 병합해야 합니다. 라이브러리 방식과 소스 복사를 동시에 사용하면 같은 엔진이 중복되므로 한 방식을 선택합니다.
+코어를 변경하면 관련 테스트를 실행하고, 동작·옵션·결과 계약이 바뀐 경우 기술 문서도 갱신합니다. 새 성능 기록에는 OS·CPU/RAM·JDK/OpenCV·입력·처리 설정·측정 방법을 붙입니다. 기존 Windows 수치를 Ubuntu 측정값으로 바꾸어 적지 않습니다. 사진·처리 결과·빌드 캐시는 Git에 포함하지 않습니다.
 
 ## 8. Frontend·OpenAPI 연결
 
@@ -386,16 +342,3 @@ APP_ENV=dev ./gradlew bootRun
 빌드 성공 후 기존 업로드 경로로 사진 한 장을 보내고, 결과 PNG가 실제 저장·조회되는지 확인해야 업무 연동까지 완료됩니다. 코어 테스트 통과는 호스트의 업로드·저장·권한 계약 검증을 대신하지 않습니다.
 
 기존 알고리즘의 한계는 유지됩니다. 3장 겹침은 일반화 검증되지 않았고, 세로 경계로 좌우 겹친 종이를 분할하는 로직은 없습니다. 회전 자동 판정, 반복 인쇄와 반복 필기의 구분, 흐린 잉크에는 검토가 필요합니다. 이번 구조 변경은 이 검출 범위를 확대하지 않습니다.
-
-## 10. 기존 사용자 변경 사항
-
-| 이전 | 변경 후 |
-|---|---|
-| `kr.co.slip.ProcessingOptions/ProcessingResult` | `kr.co.slip.api.*` |
-| `kr.co.slip.SlipProcessor` | `kr.co.slip.opencv.SlipProcessor`; 소비 코드는 `SlipImageProcessor` 사용 |
-| 자동 스캔되는 `@Service SlipProcessor` | 호스트가 제한된 factory 결과를 `@Bean(destroyMethod="close")`으로 등록 |
-| 루트 `src/main`, `src/test` | core와 demo 각 모듈로 이동 |
-| `target/slip-image-processor-1.0.0.jar` | `slip-image-demo/target/slip-image-processor-1.0.0.jar` |
-| 이식용 라이브러리 없음 | `slip-image-core/target/slip-image-core-1.0.0.jar` |
-
-데모의 ZIP 형식, 파일명, 회전·크기 옵션, 배치 인수와 기존 갤러리는 유지합니다. 원본 사진을 바꾸거나 기존 판매·재고 DB를 수정하는 이식 스크립트는 없습니다.

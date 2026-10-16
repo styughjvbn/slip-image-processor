@@ -202,8 +202,15 @@ git diff
 
 새 모듈 파일은 `git diff`에 나오지 않는 untracked 상태일 수 있으므로 `git status`와 파일 내용도 확인합니다. 모듈 소스와 빌드 설정을 함께 커밋하면 다른 개발자와 Ubuntu CI는 해당 커밋을 받아 동일한 Wrapper로 빌드할 수 있습니다. `build/` 산출물이나 Gradle 캐시는 커밋하지 않습니다.
 
-## 검증 이력과 남은 확인
+## 검증·성능 문서도 함께 관리
 
-기존 Windows 환경에서 코어 Gradle 테스트 54개 통과와 Green House Boot JAR 내 core/OpenCV 포함을 확인했습니다. 호스트 backend 테스트 793개 중 1개는 기존 아키텍처 검사의 Windows 경로 구분자 처리로 실패했습니다. **이 결과는 Ubuntu에서 실행한 검증 결과가 아닙니다.** Ubuntu 개발 환경에서는 위 검증 명령과 실제 이미지 처리를 직접 실행해야 합니다.
+설치 스크립트는 코어 소스·테스트·빌드 설정만 복사합니다. 동작 원리·검증·성능 기준인 [PROCESSING.md](PROCESSING.md)도 Green House에 복사하고 문서 목차에 연결합니다. 이 이미지 처리 저장소에서 실행합니다.
 
-상세 기록은 [VALIDATION.md](../VALIDATION.md)를 참조하세요. 전표 HTTP 계약과 파일 저장·업무 연동, Linux native 실행 검증은 빌드 연결과 별도로 진행합니다.
+```bash
+mkdir -p "$GREEN_HOUSE_REPO/docs/image-processing"
+# 처음 옮길 때 사용. 기존 문서가 있으면 비교 후 병합하며 덮어쓰지 않음
+cp -n "$SLIP_REPO/docs/PROCESSING.md" \
+  "$GREEN_HOUSE_REPO/docs/image-processing/PROCESSING.md"
+```
+
+이식 후 코어 변경과 Ubuntu 측정 결과는 Green House에서 소스·테스트·이 문서를 함께 갱신합니다. 기존 검증은 Windows 환경의 기록입니다. Ubuntu에서는 코어·호스트 테스트, 실제 업로드·저장 흐름과 Linux OpenCV native 실행을 별도로 확인합니다.
