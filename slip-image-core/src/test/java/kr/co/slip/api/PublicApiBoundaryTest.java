@@ -9,6 +9,11 @@ class PublicApiBoundaryTest {
         inspect(SlipImageProcessor.class);
         inspect(ProcessingOptions.class);
         inspect(ProcessingResult.class);
+        inspect(ManagedSlipImageProcessor.class);
+        inspect(ExecutionSettings.class);
+        inspect(OutputMode.class);
+        inspect(ProcessingRejectedException.class);
+        inspect(ProcessingInterruptedException.class);
     }
 
     private static void inspect(Class<?> type) {

@@ -1,6 +1,9 @@
 package kr.co.slip.demo.web;
 
-import kr.co.slip.opencv.SlipProcessor;
+
+import kr.co.slip.opencv.SlipProcessors;
+import kr.co.slip.api.*;
+import org.junit.jupiter.api.AfterEach;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,9 +19,38 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 class SlipControllerTest {
     private MockMvc mvc;
+    private ManagedSlipImageProcessor processor;
     @BeforeEach void setup() {
+        processor = SlipProcessors.bounded(ExecutionSettings.defaults());
         mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(
-                new SlipController(new SlipProcessor(), new com.fasterxml.jackson.databind.ObjectMapper())).build();
+                new SlipController(processor, new com.fasterxml.jackson.databind.ObjectMapper())).build();
+    }
+    @AfterEach void close() { processor.close(); }
+
+    @Test void mapsLibrarySaturationTo429() throws Exception {
+        MockMvc busyMvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(
+                new SlipController((input, options) -> { throw new ProcessingRejectedException("full"); },
+                        new com.fasterxml.jackson.databind.ObjectMapper())).build();
+        busyMvc.perform(multipart("/api/slips/process").file(new MockMultipartFile("file", new byte[]{1})))
+                .andExpect(status().isTooManyRequests()).andExpect(header().string("Retry-After", "5"));
+    }
+
+    @Test void productionModeOmitsDiagnosticZipEntries() throws Exception {
+        Mat image = new Mat(1000, 800, CvType.CV_8UC3, Scalar.all(255));
+        MatOfByte buffer = new MatOfByte();
+        try {
+            Imgcodecs.imencode(".png", image, buffer);
+            byte[] response = mvc.perform(multipart("/api/slips/process")
+                    .file(new MockMultipartFile("file", "slip.png", "image/png", buffer.toArray()))
+                    .param("outputMode", "PRODUCTION")).andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsByteArray();
+            java.util.Set<String> names = new java.util.HashSet<>();
+            try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(response))) {
+                java.util.zip.ZipEntry entry;
+                while ((entry = zip.getNextEntry()) != null) names.add(entry.getName());
+            }
+            assertEquals(java.util.Set.of("report.json", "01-corrected.png"), names);
+        } finally { image.release(); buffer.release(); }
     }
     @Test void returnsZipWithReportAndImages() throws Exception {
         Mat image = new Mat(1000, 800, CvType.CV_8UC3, Scalar.all(255));

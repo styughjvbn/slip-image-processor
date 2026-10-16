@@ -18,11 +18,16 @@
 │  └─ src/
 │     ├─ main/java/kr/co/slip/
 │     │  ├─ api/
-│     │  │  ├─ SlipImageProcessor.java   process(byte[], ProcessingOptions)
+│     │  │  ├─ SlipImageProcessor.java   동기 처리 계약
+│     │  │  ├─ ManagedSlipImageProcessor.java  비동기 제출·상태·종료
+│     │  │  ├─ ExecutionSettings.java / OutputMode.java
 │     │  │  ├─ ProcessingOptions.java    설정·검증
 │     │  │  └─ ProcessingResult.java     보고서·PNG 바이트 결과
+│     │  ├─ execution/BoundedSlipImageProcessor.java  worker·대기열 제한
 │     │  └─ opencv/
-│     │     ├─ SlipProcessor.java        API를 직접 구현하는 처리 엔진
+│     │     ├─ SlipProcessors.java       제한된 실행기 생성·native 스레드 설정
+│     │     ├─ MatScope.java             단계별 native 자원 소유
+│     │     ├─ SlipProcessor.java        저수준 동기 처리 엔진
 │     │     ├─ PaperSeparator.java       종이 분리 구현
 │     │     ├─ PixelScale.java           해상도별 공간 임계값
 │     │     └─ NativeOpenCv.java         네이티브 로더
@@ -40,7 +45,7 @@
 └─ output/                         로컬 갤러리, Git 제외
 ```
 
-의존 방향은 `demo → core API ← OpenCV 구현`입니다. 데모의 구성 코드와 CLI 진입점만 구현을 직접 생성합니다. 코어의 런타임 외부 의존성은 OpenPnP OpenCV이며 Spring, HTTP, Jackson, JPA, PostgreSQL에는 의존하지 않습니다. 공개 API의 중첩 값과 generic에도 `Mat`, `MultipartFile`, HTTP 응답이나 Entity를 노출하지 않습니다.
+의존 방향은 `demo → core API ← OpenCV 구현`입니다. 데모의 구성 코드와 CLI 진입점만 구현을 직접 생성합니다. 코어의 런타임 외부 의존성은 OpenPnP OpenCV이며 Spring, HTTP, Jackson, JPA, PostgreSQL에는 의존하지 않습니다. 라이브러리의 `execution` 패키지가 Java 표준 Executor로 실행 한도를 관리하며, `api.ManagedSlipImageProcessor`가 동기·비동기 호출과 종료 계약을 제공합니다. 공개 API의 중첩 값과 generic에도 `Mat`, `MultipartFile`, HTTP 응답이나 Entity를 노출하지 않습니다.
 
 단순 전달을 위한 application 서비스·Adapter를 라이브러리 내부에 추가하지 않았습니다. `SlipImageProcessor`는 OpenCV 기술 구현을 호스트의 업무 코드에서 격리하는 실제 경계이며, 기존 엔진이 이 계약을 직접 구현합니다. 실제 소비자가 없는 SPI·Repository·domain 패키지는 만들지 않습니다.
 
@@ -52,7 +57,7 @@
 green-house/backend/src/main/java/<실제 루트 패키지>/
 └─ sales/document/
    ├─ application/
-   │  └─ DocumentImagePreparationService.java   처리 조율·동시 실행 제한
+   │  └─ DocumentImagePreparationService.java   업무 조율·출력 정책
    ├─ integration/image/
    │  └─ SlipImageConfiguration.java            외부 기술 구현 Bean 구성
    └─ web/
@@ -113,35 +118,41 @@ OpenPnP `org.openpnp:opencv:4.9.0-0`은 전이 의존성으로 들어옵니다. 
 ```java
 package com.example.greenhouse.sales.document.integration.image;
 
-import kr.co.slip.api.SlipImageProcessor;
-import kr.co.slip.opencv.SlipProcessor;
+import java.time.Duration;
+import kr.co.slip.api.ExecutionSettings;
+import kr.co.slip.api.ManagedSlipImageProcessor;
+import kr.co.slip.opencv.SlipProcessors;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration(proxyBeanMethods = false)
 public class SlipImageConfiguration {
-    @Bean
-    public SlipImageProcessor slipImageProcessor() {
-        return new SlipProcessor();
+    @Bean(destroyMethod = "close")
+    public ManagedSlipImageProcessor slipImageProcessor(
+            @Value("${sales.document.image.workers:2}") int workers,
+            @Value("${sales.document.image.queue-capacity:4}") int queueCapacity,
+            @Value("${sales.document.image.opencv-threads:1}") int openCvThreads) {
+        return SlipProcessors.bounded(
+                new ExecutionSettings(workers, queueCapacity, Duration.ofSeconds(30)), openCvThreads);
     }
 }
 ```
 
-이 클래스는 호스트의 기존 component scan 아래에 둡니다. `kr.co.slip` 전체를 추가 스캔하거나 데모의 `SlipApplication`을 import하지 않습니다. 코어에는 자동 구성이나 `@Service`가 없으며 Bean 이름도 호스트가 결정합니다. 구현 타입을 직접 참조하는 곳은 이 구성 클래스만으로 제한하고 application은 `SlipImageProcessor`를 주입받습니다.
+이 클래스는 호스트의 기존 component scan 아래에 둡니다. `kr.co.slip` 전체를 추가 스캔하거나 데모의 `SlipApplication`을 import하지 않습니다. 코어에는 자동 구성이나 `@Service`가 없습니다. **실행 제한은 이식용 core JAR 안에 구현돼 있으며** 호스트는 설정과 Bean 생명주기만 연결합니다. application은 공개 API만 주입받고 OpenCV 구현을 직접 생성하지 않습니다.
 
-엔진 생성 시 OpenCV를 한 번 로드합니다. 네이티브 라이브러리가 맞지 않으면 이 시점에 호스트 기동이 실패할 수 있으므로 배포 이미지에서 실제 기동을 검사합니다.
+`SlipProcessors.bounded()`는 OpenCV 로딩과 JVM 전체의 native 스레드 설정을 초기화합니다. 기본 OpenCV 스레드는 1, worker는 2, 대기열은 4입니다. 여러 인스턴스를 만들면 worker/대기열 한도는 각각 따로 생깁니다. 동시 처리 한도를 공유하려면 **호스트의 모든 이미지 입력 경로가 같은 싱글톤을 사용**해야 합니다. 낮은 수준의 `new SlipProcessor()` 호출은 제한을 우회하므로 직접 사용하지 않습니다.
+
+OpenCV 스레드 설정은 JVM 전체에 영향을 줍니다. 이 라이브러리의 factory에 서로 다른 값을 지정하면 예외를 발생시킵니다. 다른 OpenCV 사용처도 있다면 초기화 정책을 함께 정하고, 처리 중 `Core.setNumThreads()`를 바꾸지 마세요. 이 설정은 이미지 worker 수를 대신하지 않습니다. 네이티브 파일이 맞지 않으면 Bean 생성 시 기동이 실패할 수 있습니다.
 
 ### 4.4 application에서 사용
 
-아래는 HTTP와 무관한 호출 예시입니다. 설정과 동시 실행 제한에 실제 책임이 있으므로 application 서비스에 둡니다. 단순 전달이 전부라면 기존 Document 유스케이스에 이 로직을 합쳐도 됩니다.
+아래 서비스는 출력 정책과 설정을 소유합니다. 이미 전표 준비 유스케이스가 있다면 해당 application에 합치고 별도 전달 서비스를 만들 필요는 없습니다. 호스트에 별도 Executor나 Semaphore를 복제하지 않습니다.
 
 ```java
 package com.example.greenhouse.sales.document.application;
 
-import java.util.concurrent.Semaphore;
-import kr.co.slip.api.ProcessingOptions;
-import kr.co.slip.api.ProcessingResult;
-import kr.co.slip.api.SlipImageProcessor;
+import kr.co.slip.api.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -149,44 +160,35 @@ import org.springframework.stereotype.Service;
 public class DocumentImagePreparationService {
     private final SlipImageProcessor processor;
     private final ProcessingOptions defaults;
-    private final Semaphore slots;
 
-    public DocumentImagePreparationService(
-            SlipImageProcessor processor,
-            @Value("${sales.document.image.max-dimension:2200}") int maxDimension,
-            @Value("${sales.document.image.max-concurrent:2}") int maxConcurrent) {
+    public DocumentImagePreparationService(SlipImageProcessor processor,
+            @Value("${sales.document.image.max-dimension:2200}") int maxDimension) {
         this.processor = processor;
-        this.defaults = ProcessingOptions.defaults().withMaxDimension(maxDimension);
-        if (maxConcurrent < 1) throw new IllegalArgumentException("max-concurrent must be positive");
-        this.slots = new Semaphore(maxConcurrent);
+        this.defaults = ProcessingOptions.defaults().withMaxDimension(maxDimension)
+                .withOutputMode(OutputMode.PRODUCTION);
     }
 
     public ProcessingResult prepare(byte[] original, int rotationDegrees) {
-        if (!slots.tryAcquire()) throw new ImageProcessingBusyException();
-        try {
-            try {
-                return processor.process(original, defaults.withRotation(rotationDegrees));
-            } catch (IllegalArgumentException invalid) {
-                throw new ImageProcessingInputException(invalid);
-            }
-        } finally {
-            slots.release();
-        }
-    }
-
-    public static final class ImageProcessingBusyException extends RuntimeException {
-        public ImageProcessingBusyException() { super("Document image processing capacity exceeded"); }
-    }
-
-    public static final class ImageProcessingInputException extends RuntimeException {
-        public ImageProcessingInputException(Throwable cause) { super("Invalid document image or options", cause); }
+        return processor.process(original, defaults.withRotation(rotationDegrees));
     }
 }
 ```
 
-위 예외는 Green House가 이미 사용하는 업무 예외 계층으로 바꿔도 됩니다. application 값과 HTTP DTO를 같은 이름의 복제 구조로 만들 필요는 없습니다. `ProcessingResult`는 이 기능 내부의 기술 결과로 사용하고, 다른 최상위 모듈에 이를 공개해야 할 때는 실제 필요한 문서 소유 값만 공개 계약으로 정의합니다.
+`process()`는 같은 실행기에 제출한 뒤 결과를 기다리는 동기 호출입니다. application 값과 HTTP DTO를 중복 생성할 필요는 없습니다. `ProcessingResult`는 기능 내부의 기술 결과로 사용하고, 다른 최상위 모듈에는 실제 필요한 문서 소유 값만 공개합니다. 코어 입력 오류와 `ProcessingRejectedException`은 기존 호스트 예외 체계에 기능 단위로 연결합니다.
 
-엔진 자체는 요청별 로컬 `Mat`을 사용해 동시 호출할 수 있지만 **동시 실행 개수를 제한하지 않습니다**. 현재 데모는 HTTP Controller에서 2건으로 제한하며, 위 호스트 예시는 application에서 제한하므로 HTTP 외의 같은 유스케이스 호출에도 적용됩니다. JVM 전체의 모든 이미지 처리 진입점은 같은 limiter를 사용해야 하며, 여러 Pod/JVM에는 각각 별도 한도가 적용됩니다. 중간에 엔진을 직접 호출하면 이 제한을 우회합니다.
+다중 파일의 비동기 처리에는 `ManagedSlipImageProcessor`를 주입받습니다.
+
+```java
+var future = processor.processAsync(() -> java.nio.file.Files.readAllBytes(path), options);
+// loader는 worker가 확보된 뒤 실행됩니다. 대기열에는 파일 경로만 남습니다.
+// future의 완료 결과를 저장/소비하고 참조를 해제합니다.
+```
+
+대기열 한도를 넘긴 제출은 즉시 `ProcessingRejectedException`을 던집니다. queue-capacity=0은 대기 없이 worker가 비어 있을 때만 접수합니다. 무제한 재시도나 전체 파일의 바이트/결과를 List에 쌓지 않습니다. loader에는 처리 직전에 읽을 수 있는 안정적인 파일을 사용하고 HTTP 요청이 끝나면 사라지는 `MultipartFile` 임시 파일을 그대로 참조하지 마세요. `byte[]` 비동기 인수를 사용하면 대기 중에도 그 바이트가 유지되며 호출자는 내용을 변경하면 안 됩니다.
+
+취소는 **대기 중인 작업을 제거하거나 결과 대기를 중단**하는 의미입니다. 실행 중인 JNI를 즉시 중단하지 않습니다. 해당 native 작업이 실제 끝날 때까지 worker 한도를 계속 점유합니다. 같은 실행기의 loader 안에서 동기 `process()`를 재호출하면 deadlock을 막기 위해 거부합니다. CompletableFuture callback은 완료 worker에서 실행될 수 있으므로 callback에서 같은 실행기에 동기 호출하거나 `close()`하지 않습니다.
+
+`close()`는 신규 접수를 막고 기존 작업 종료를 설정 시간까지 기다립니다. 시간 초과 시 대기 작업의 Future를 실패시키고 실행 중 스레드에 interrupt를 요청하지만, native 연산 종료를 보장하지 않으며 예외로 알립니다. 호스트 종료 유예 시간을 가장 긴 처리 시간과 대기열에 맞추고, 종료는 worker 밖에서 수행합니다. `status()`의 active/queued/completed/rejected 값은 관측용 순간값이며 admission 제어를 대신하지 않습니다. 완료 결과·HTTP ZIP 조립·DB/파일 저장 메모리는 소비자가 관리합니다.
 
 설정 예시(호스트의 기존 YAML에 병합):
 
@@ -195,10 +197,12 @@ sales:
   document:
     image:
       max-dimension: 2200
-      max-concurrent: 2
+      workers: 2
+      queue-capacity: 4
+      opencv-threads: 1
 ```
 
-요청별 크기 선택이 실제로 필요하면 기존 HTTP 계약에서 800–3000 범위를 검증하고 `defaults.withMaxDimension(requested)`를 사용합니다. 위 예시는 서버 설정으로 크기를 고정하며, 회전만 호출 인수로 받습니다.
+요청별 크기 선택이 필요하면 HTTP 계약에서 800–3000을 검증하고 `defaults.withMaxDimension(requested)`를 사용합니다. 위 예시는 서버 설정으로 크기를 고정하고 회전만 호출 인수로 받습니다.
 
 ## 5. HTTP·저장·트랜잭션 연결
 
@@ -225,16 +229,28 @@ sales:
 
 | 조건 | HTTP | 제안 코드 / 연결 위치 |
 |---|---:|---|
-| 빈 파일·디코딩 실패·잘못된 옵션·허용 픽셀 초과 | 400 | `DOCUMENT_IMAGE_INVALID_INPUT`, 위 application 입력 예외 |
+| 빈 파일·디코딩 실패·잘못된 옵션·허용 픽셀 초과 | 400 | `DOCUMENT_IMAGE_INVALID_INPUT`, 코어 IllegalArgumentException을 기능 단위 오류로 변환 |
 | 프레임워크 multipart 업로드 제한 초과 | 413 | 기존 업로드 공통 오류; 처리 엔진에 도달하기 전에 발생 |
-| 동시 처리 한도 초과 | 429 | `DOCUMENT_IMAGE_PROCESSING_BUSY`, 위 application busy 예외 |
+| 동시 처리 한도 초과 | 429 | `DOCUMENT_IMAGE_PROCESSING_BUSY`, core API의 ProcessingRejectedException |
 | 표·종이 검출 불확실, 자동 회전 검토 필요 | 200 | 실패로 바꾸지 않고 `warnings`, `reviewRequired` 전달 |
 | 예상하지 못한 OpenCV 처리 오류 | 500 | `DOCUMENT_IMAGE_PROCESSING_FAILED`, 서버 원인 로그·공통 오류 응답 |
+| 호출자 대기 중단 | 호스트 정책 | `ProcessingInterruptedException`; native 작업은 즉시 중단되지 않을 수 있음 |
 | 네이티브 로더 실패 | 기동 실패 | 배포 진단 대상; 정상 처리 결과로 숨기지 않음 |
 
 핵심 입력 한도는 **20 MiB**, 디코딩된 이미지 **60,000,000 픽셀**입니다. 기존 multipart 설정이 더 작다면 코어에 도달하기 전에 제한됩니다. Spring/프록시의 업로드 제한을 검토해 의도한 크기와 맞추되 기존 전역 제한을 무조건 늘리지 않습니다. `nu.pattern.OpenCV.loadLocally()`는 네이티브 파일을 임시 경로에 추출하므로 쓰기 가능하고 네이티브 로딩이 허용된 임시 경로가 필요합니다.
 
 ## 6. 처리 옵션과 결과 계약
+
+출력 모드는 `withOutputMode(OutputMode.PRODUCTION/REVIEW/ALL)`로 선택합니다. 기존 호출과 파일명을 보존하려고 기본값은 ALL을 유지했습니다. 운영에서는 PRODUCTION을 명시적으로 사용하세요.
+
+| 모드 | 생성 파일 |
+|---|---|
+| PRODUCTION | 01-corrected + 실제 검출된 표/종이 PNG + 보고서 |
+| REVIEW | PRODUCTION + 05-row-decisions + 06-paper-contours |
+| ALL | REVIEW + 02-lines + 03-horizontal + 04-vertical + 07-paper-mask |
+
+미선택 overlay는 복제·그리기·인코딩부터 생략합니다. 보고서·표/종이 판정과 공통 출력 PNG는 모드에 따라 바뀌지 않습니다. CLI는 `--workers=2 --queue-capacity=4 --opencv-threads=1 --output-mode=PRODUCTION`으로 같은 library 실행기를 사용하며 완료된 결과부터 저장합니다. 완료 순서는 달라도 summary/갤러리는 파일명 순으로 정리합니다. 병렬 배치의 milliseconds는 대기와 저장 시간을 포함하므로 순수 엔진 벤치마크로 사용하지 않습니다.
+
 
 ```java
 ProcessingOptions options = ProcessingOptions.defaults()
@@ -273,14 +289,15 @@ var tables = result.report().tables();
 
 ## 7. 소스 복사로 이식해야 할 때
 
-아티팩트 의존을 추가하기 어려울 때만 선택합니다. **코어의 main 소스 7개와 test 소스만** 복사하고 데모·루트 실행 클래스·application.yml·부모 POM은 복사하지 않습니다.
+아티팩트 의존을 추가하기 어려울 때만 선택합니다. **코어의 main 소스 전체와 test 소스만** 복사하고 데모·루트 실행 클래스·application.yml·부모 POM은 복사하지 않습니다.
 
 | 원본 패키지 | 대상 패키지 예시 |
 |---|---|
 | `kr.co.slip.api` | `<base>.sales.document.api.image` |
+| `kr.co.slip.execution` | `<base>.sales.document.integration.image.execution` |
 | `kr.co.slip.opencv` | `<base>.sales.document.integration.image.opencv` |
 
-`package`와 일반/static `import`를 함께 변경하고 테스트도 같은 대응 패키지로 옮깁니다. `PublicApiBoundaryTest`의 허용 API 패키지 문자열도 변경합니다. `PixelScale`과 `PaperSeparator`는 package-private이므로 OpenCV 구현 네 파일은 같은 패키지에 둡니다. `SlipProcessor`가 API를 직접 구현하는 구조와 `@Bean` 구성은 유지합니다.
+`package`와 일반/static `import`를 함께 변경하고 테스트도 같은 대응 패키지로 옮깁니다. `PublicApiBoundaryTest`의 허용 API 패키지 문자열도 변경합니다. `PixelScale`과 `PaperSeparator`는 package-private이므로 OpenCV 구현 파일은 같은 패키지에 둡니다. `SlipProcessors` factory의 execution import도 바꾸고 제한된 실행기와 `@Bean(destroyMethod="close")` 구성을 유지합니다.
 
 호스트 빌드에 `org.openpnp:opencv:4.9.0-0` 의존성 하나를 추가하고 JUnit 테스트는 기존 테스트 도구를 사용합니다. feature API를 최상위 모듈 외부에 자동 공개하지 않습니다. 다른 최상위 모듈이 실제로 사용하는 업무 계약만 `sales/api/document`에 정의하고 기존 정확한 타입/메서드 검사를 갱신합니다.
 
@@ -322,7 +339,7 @@ Java 21, 호스트 OS/CPU에 맞는 OpenCV 네이티브 라이브러리와 추�
 |---|---|
 | `kr.co.slip.ProcessingOptions/ProcessingResult` | `kr.co.slip.api.*` |
 | `kr.co.slip.SlipProcessor` | `kr.co.slip.opencv.SlipProcessor`; 소비 코드는 `SlipImageProcessor` 사용 |
-| 자동 스캔되는 `@Service SlipProcessor` | 호스트가 `@Bean`으로 등록 |
+| 자동 스캔되는 `@Service SlipProcessor` | 호스트가 제한된 factory 결과를 `@Bean(destroyMethod="close")`으로 등록 |
 | 루트 `src/main`, `src/test` | core와 demo 각 모듈로 이동 |
 | `target/slip-image-processor-1.0.0.jar` | `slip-image-demo/target/slip-image-processor-1.0.0.jar` |
 | 이식용 라이브러리 없음 | `slip-image-core/target/slip-image-core-1.0.0.jar` |

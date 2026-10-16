@@ -6,28 +6,41 @@
 
 Windows x64, Eclipse Temurin Java 21.0.9, Spring Boot 3.5.0, OpenPnP OpenCV 4.9.0-0, Maven 3.9.9.
 
-**자동 테스트 47개 통과**(core 42개, demo 5개), 실패·오류·생략 0개.
+**자동 테스트 62개 통과**(core 54개, demo 8개), 실패·오류·생략 0개.
 
 | 테스트 | 개수 | 검증 내용 |
 |---|---:|---|
 | RotationTest | 17 | 정확한 네 방향 회전과 표식 보존, 자동 0/180도 방향, -27/23/44도 기울기, 네 방향+17도 조합, 원본 모서리 좌표 역변환, 잘못된 각도 거부 |
 | PaperSeparatorTest | 8 | 확정 문서의 alpha 채널, 사다리꼴 종이의 배경 분리, 겹침 경계 분할, 밝기가 비슷하고 색상만 다른 종이, 경계 없는 두 표를 임의로 나누지 않음, 떨어진 종이 분리, 균일 배경의 오검출 방지, 폭이 다른 종이를 분리한 뒤 각각 윤곽 보정 |
 | SlipProcessorTest | 6 | 입력 검증, 무표 이미지 보존, 반복 인쇄 제외, 파란/검은 글씨 보존, 문서·격자 원근 보정, 가로 전표 방향 |
-| SlipControllerTest | 2 | multipart 회전·maxDimension 파라미터와 ZIP 응답, 실제 출력 크기, 유효 이미지에 대한 범위 밖 크기·잘못된 타입의 HTTP 400 |
-| BatchTest | 2 | 파일별 회전 JSON 읽기와 각도 검증, 회전 JSON 없이 크기 플래그 사용, 잘못된 크기는 출력 전에 거부 |
+| SlipControllerTest | 4 | multipart 회전·maxDimension 파라미터와 ZIP 응답, 실제 출력 크기, 유효 이미지에 대한 범위 밖 크기·잘못된 타입의 HTTP 400, library 포화 429, PRODUCTION ZIP 출력 |
+| BatchTest | 3 | 파일별 회전 JSON 읽기와 각도 검증, 회전 JSON 없이 크기 플래그 사용, 잘못된 크기는 출력 전에 거부, worker 2개·queue 0/1의 실제 파일 병렬 처리와 모드 변경 시 진단 파일 정리 |
 | ResolutionTest | 10 | 실제 축소 비율·면적 제곱 배율·900px 분석 좌표계 검증, 800/1100/1600/2200/3000px에서 반복 인쇄 제외·필기 보존·동일 빈 행 판정, 800/1100/2200/3000px에서 겹침 종이 두 장 분리 |
 | PublicApiBoundaryTest | 1 | 공개 API의 반환·인수·생성자·중첩 값·generic에 Java/API 값 외 구현 타입이 노출되지 않음 |
-| SlipImageConfigurationTest | 1 | OpenCV 패키지 추가 스캔 없이 명시적 구성으로 API Bean 하나 등록 |
+| SlipImageConfigurationTest | 1 | OpenCV 패키지 추가 스캔 없이 managed API Bean 하나 등록, context 종료 시 실행기 close |
+
+| BoundedSlipImageProcessorTest | 8 | worker/queue 제한·지연 로딩·대기 취소·실행 중 취소·예외 후 복구·정상 종료·종료 시간 초과·동기 호출자 인터럽트·재진입 거부·설정 검증 |
+| ResourceLifecycleTest | 4 | setTo alias/ROI의 명시적 해제·예외 시 정리·조기 해제, 모드 간 보고서/공통 PNG 동일성, 실제 native 반복 동시 성공·실패 |
 
 ## Green House 이식 구조 검증
 
-루트 Maven reactor를 `slip-image-core`와 `slip-image-demo`로 나누고 전체 `test package`를 통과했습니다. 코어 JAR은 54,402바이트이며 Java API와 OpenCV 구현 클래스만 포함하고 `BOOT-INF`·Spring 실행 클래스·application.yml을 포함하지 않습니다. 데모만 Spring Boot 실행 JAR로 생성합니다.
+루트 Maven reactor를 `slip-image-core`와 `slip-image-demo`로 나누고 전체 `test package`를 통과했습니다. 코어 JAR은 Java API·Java 실행 제어·OpenCV 구현 클래스만 포함하고 `BOOT-INF`·Spring 실행 클래스·application.yml을 포함하지 않습니다. 데모만 Spring Boot 실행 JAR로 생성합니다.
 
 부모 POM과 코어를 작업공간의 로컬 Maven 저장소에 설치했습니다. 별도의 Spring Boot 부모나 Spring 의존성이 없는 최소 Maven 소비 프로젝트에서 `kr.co.slip:slip-image-core:1.0.0` 의존성만 선언해 컴파일에 성공했습니다. 실행 classpath에도 소비 클래스·코어 JAR·OpenPnP OpenCV JAR만 포함해 실제 `20260816_091446.jpg`를 1600px/수동 0도로 처리했고 표 2개·종이 2개 결과를 확인했습니다.
 
 패키징한 데모는 `--spring.main.web-application-type=none`으로 Spring context·Bean·native 로딩 기동을 확인했습니다. HTTP 계약은 MockMvc로 검증했습니다. 현재 샌드박스가 로컬 loopback 소켓 연결을 제한해 Tomcat 실제 포트 기동 검사는 완료하지 못했습니다. 데모 batch 코드와 갤러리 형식은 유지하며 기존 `output`은 재생성하지 않았습니다.
 
 Green House 실제 저장소·보안·공통 envelope·아키텍처 검사·Linux 배포·frontend 생성은 제공되지 않아 실행하지 않았습니다. 해당 통합 단계와 책임별 배치는 [이식 가이드](docs/MIGRATION_GREEN_HOUSE.md)에 구분했습니다.
+
+## 메모리·실행 제어 개선 검증
+
+반환 Mat 해제 누락, 단계별 Mat 수명, 종이 경계의 대형 좌표 배열, 픽셀별 JNI 반복, 불필요한 진단 이미지 출력을 개선했습니다. 이식용 core에 worker·queue 한도와 취소/종료를 포함했으며 HTTP·CLI가 이를 사용합니다. Native 내부 스레드는 factory 초기화 시 설정합니다.
+
+실제 사진 한 장의 단일 실행·같은 JVM 12회 반복·worker 2개 실행과 관측 조건은 [성능·메모리 검증](docs/PERFORMANCE.md)에 기록했습니다. 이는 짧은 관측이며 모든 입력의 장시간 누수 부재나 처리량을 보장하지 않습니다. 기존 갤러리는 유지하고 새 결과는 output-preview에 저장했습니다.
+
+현재 JAR로 사진 091446/091908/092640 세 장을 2200px·PRODUCTION·worker=2·queue=1로 배치 처리했습니다. 기존과 같은 회전 override를 사용했고 각각 표/종이/제거 행이 2/2/3, 2/1/6, 1/1/7로 유지됐습니다. 결과는 `output-preview/improved-three`에 있습니다. 단일 사진은 ALL과 PRODUCTION 모두 2/2/3이었습니다.
+
+업데이트한 core를 로컬 Maven 저장소에 설치한 후, Spring 없는 독립 Maven 소비 프로젝트에서 `ManagedSlipImageProcessor`와 `SlipProcessors.bounded()`를 사용해 컴파일·실제 사진 처리를 확인했습니다. 완료 후 close까지 수행했습니다. 호스트 Green House 저장소 자체에 대한 통합 검증은 별도입니다.
 
 ## maxDimension 변경 검증
 

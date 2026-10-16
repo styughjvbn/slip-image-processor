@@ -6,3 +6,9 @@ spring:
 server:
   address: 127.0.0.1
   port: 8080
+slip:
+  execution:
+    workers: 2
+    queue-capacity: 4
+    opencv-threads: 1
+    shutdown-seconds: 30

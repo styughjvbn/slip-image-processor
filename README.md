@@ -10,7 +10,7 @@ slip-image-demo/   Spring Boot 서버, 개발용 ZIP API, 배치 실행·갤러�
 docs/             대상 아키텍처에 맞춘 배치·설정·연동 가이드
 ```
 
-호스트 프로젝트에는 `slip-image-core`만 의존성으로 추가합니다. 공개 계약은 `kr.co.slip.api.SlipImageProcessor`, 구현은 `kr.co.slip.opencv.SlipProcessor`이며 Spring Bean은 호스트가 명시적으로 등록합니다. 기존 패키지·실행 JAR 경로의 변경 사항도 가이드에 정리했습니다.
+호스트 프로젝트에는 `slip-image-core`만 의존성으로 추가합니다. 공개 계약은 `kr.co.slip.api.ManagedSlipImageProcessor`이며 `kr.co.slip.opencv.SlipProcessors.bounded()`로 생성한 제한된 실행기를 호스트가 싱글톤 Bean으로 등록합니다. Spring 종료 시 `close()`를 연결합니다. 기존 패키지·실행 JAR 경로의 변경 사항도 가이드에 정리했습니다.
 
 ## 실행
 
@@ -34,6 +34,38 @@ curl.exe -f -X POST "http://127.0.0.1:8080/api/slips/process" `
   -F "ignoreRepeatedPrint=true" -F "protectedTopRows=2" -F "maxDimension=1600" `
   -o result.zip
 ```
+
+## 실행 제어와 출력 모드
+
+이식 시 다음처럼 생성합니다. 코어에는 Spring 의존성이 없습니다.
+
+```java
+try (ManagedSlipImageProcessor processor = SlipProcessors.bounded(
+        new ExecutionSettings(2, 4, java.time.Duration.ofSeconds(30)), 1)) {
+    var options = ProcessingOptions.defaults().withOutputMode(OutputMode.PRODUCTION);
+    var result = processor.process(imageBytes, options); // 동기 대기, 같은 실행 제한 적용
+    var future = processor.processAsync(() -> java.nio.file.Files.readAllBytes(path), options);
+    var nextResult = future.get(); // 결과를 소비하고 참조를 해제
+}
+```
+
+Spring에서는 요청마다 생성하지 말고 한 개의 Bean을 공유하고 `@Bean(destroyMethod="close")`로 종료합니다. 기본 OpenCV 내부 스레드는 1입니다. JVM 전체 설정이므로 서로 다른 값의 factory 초기화는 거부합니다. 데모 YAML의 `slip.execution.workers`, `queue-capacity`, `opencv-threads`, `shutdown-seconds`로 지정할 수 있습니다. worker/queue 한도는 이미지 작업 기준이며 전체 JVM 메모리나 완료 후 저장·ZIP 메모리를 제한하지 않습니다.
+
+취소/인터럽트가 실행 중 JNI를 즉시 중단하지 않으며 실제 반환까지 worker를 점유합니다. close는 신규 제출을 거부하고 종료를 기다리며, 제한 시간 초과 시 대기 Future를 실패시키고 native 작업이 남아 있을 수 있음을 예외로 알립니다. 같은 worker callback/loader에서 동기 재진입이나 close를 하지 않습니다. 세부 생명주기 계약은 이식 가이드를 참조하세요.
+
+| outputMode | 출력 |
+|---|---|
+| PRODUCTION | 보정 영상·표별 축약 PNG·종이 PNG·보고서 |
+| REVIEW | PRODUCTION + 행 판정·종이 윤곽 표시 |
+| ALL | REVIEW + 선 표시·수평/수직 마스크·종이 마스크 |
+
+기존 결과 호환을 위해 기본값은 ALL입니다. `withOutputMode(...)`, API의 `-F "outputMode=PRODUCTION"`, CLI의 `--output-mode=PRODUCTION`으로 선택합니다. 미선택 영상은 복제·그리기·PNG 인코딩부터 생략합니다.
+
+```powershell
+java -Xmx1200m -jar slip-image-demo/target/slip-image-processor-1.0.0.jar --batch raw-data output rotation-overrides.example.json --workers=2 --queue-capacity=4 --opencv-threads=1 --output-mode=PRODUCTION
+```
+
+CLI는 제한된 수의 파일 경로를 제출하고 worker가 확보된 뒤 파일을 읽습니다. 완료 순으로 저장하며 summary/갤러리는 파일명 순입니다. 이전 실행의 미선택 진단 PNG는 해당 결과 폴더에서 정리합니다. 병렬 배치의 milliseconds에는 대기·저장 시간이 포함됩니다. 단일 처리 비교는 worker 1개와 같은 출력 모드로 측정하세요.
 
 ## 회전 처리
 
@@ -118,7 +150,7 @@ java -Xmx1200m -jar slip-image-demo/target/slip-image-processor-1.0.0.jar --batc
 
 ## 기존 Spring Boot 프로젝트에서 사용
 
-**권장 이식 대상은 Spring 의존성이 없는 `kr.co.slip:slip-image-core:1.0.0` 일반 JAR입니다.** 공개 계약은 `kr.co.slip.api`, OpenCV 구현은 `kr.co.slip.opencv`에 있습니다. 호스트 설정에서 `SlipImageProcessor` Bean을 명시적으로 등록합니다. 소스 복사 방식과 Green House 기능별 배치는 [이식 가이드](docs/MIGRATION_GREEN_HOUSE.md)를 따릅니다. OpenPnP 패키지는 OpenCV Java API와 운영체제별 네이티브 라이브러리를 묶어 배포하며, 픽셀 처리는 `org.opencv` API가 수행합니다. 현재 샘플 앱의 Spring Boot 버전은 3.5.0입니다. 호스트의 Spring Boot 버전을 유지하며 데모 서버·Controller·설정을 이식할 필요는 없습니다.
+**권장 이식 대상은 Spring 의존성이 없는 `kr.co.slip:slip-image-core:1.0.0` 일반 JAR입니다.** 공개 계약은 `kr.co.slip.api`, 실행 제어는 `kr.co.slip.execution`, OpenCV 구현은 `kr.co.slip.opencv`에 있습니다. 호스트에서 `SlipProcessors.bounded()`를 Bean으로 등록하고 종료 시 `close()`를 호출합니다. 소스 복사 방식과 Green House 기능별 배치는 [이식 가이드](docs/MIGRATION_GREEN_HOUSE.md)를 따릅니다. OpenPnP 패키지는 OpenCV Java API와 운영체제별 네이티브 라이브러리를 묶어 배포하며, 픽셀 처리는 `org.opencv` API가 수행합니다. 현재 샘플 앱의 Spring Boot 버전은 3.5.0입니다. 호스트의 Spring Boot 버전을 유지하며 데모 서버·Controller·설정을 이식할 필요는 없습니다.
 
 ```java
 ProcessingResult result = processor.process(imageBytes, ProcessingOptions.defaults());
@@ -130,7 +162,7 @@ if (!papers.isEmpty()) {
 }
 ```
 
-`NativeOpenCv.load()`는 JVM당 한 번만 네이티브 라이브러리를 로드합니다. 엔진은 요청별 로컬 상태만 사용하고 `Mat`/ROI/커널/컨투어를 처리 종료 시 모두 해제합니다. 결과는 Java byte 배열과 DTO이므로 호출자가 `Mat.release()`를 호출할 필요가 없습니다. 데모 API는 JVM당 동시 이미지 처리 2건을 허용하고 초과 시 HTTP 429를 반환합니다. 코어 자체에는 동시 실행 제한이 없으므로 호스트 application에서 제한합니다.
+`NativeOpenCv.load()`는 JVM당 한 번만 네이티브 라이브러리를 로드합니다. 엔진은 요청별 로컬 상태를 사용하며 `Mat`/ROI/커널/컨투어의 픽셀 참조를 단계별 scope에서 명시적으로 해제합니다. `setTo` 반환 Mat도 등록하고 인코딩 버퍼는 복사 직후 해제합니다. 결과는 Java byte 배열과 DTO이므로 호출자가 `Mat.release()`를 호출할 필요가 없습니다. 이식용 코어의 제한된 실행기는 기본 worker 2개·대기열 4개를 사용하며 초과 접수를 거절합니다. 데모 API는 이를 HTTP 429로 변환합니다. HTTP와 CLI 모두 같은 라이브러리 실행 제어를 사용합니다. 제한은 공유한 실행기 인스턴스 단위이며 저수준 `new SlipProcessor()`는 이 제한을 우회합니다.
 
 ## 조정할 값
 
@@ -144,6 +176,7 @@ if (!papers.isEmpty()) {
 | `minimumInkRatio` | 0.00035 | 이 값 미만의 유효 잉크 비율이면 빈 행 후보 |
 | `minimumComponentArea` | 8 | 기준 크기에서의 연결 성분 최소 면적 (실제 적용 시 배율² 반영) |
 | `rotationDegrees` | -1 | 자동(-1) 또는 시계 방향 0/90/180/270도 회전 |
+| `outputMode` | ALL | PRODUCTION / REVIEW / ALL. 운영에서는 PRODUCTION 명시 권장 |
 
 `maxDimension`은 기본 2200, 허용 범위 800–3000입니다. API에서 생략하면 기존 크기를 유지하고 범위를 벗어나면 HTTP 400을 반환합니다. Java와 일괄 처리에서도 지정할 수 있습니다.
 
@@ -171,6 +204,8 @@ java -Xmx1200m -jar slip-image-demo/target/slip-image-processor-1.0.0.jar --batc
 예를 들어 긴 변 4000px 원본을 1100px로 처리하면 기본 대비 배율은 0.5이고 최소 연결 성분 면적은 8→2가 됩니다. 긴 변 1000px 원본에서 제한을 2200→3000으로 바꿔도 실제 이미지와 임계값은 바뀌지 않습니다. 작은 원본은 확대하지 않으며, 결과는 원본 해상도로 복원하지 않습니다. 보정 후 캔버스는 회전/원근 변환으로 제한값보다 커질 수 있습니다. 해상도를 낮추면 작은 글씨가 사라질 수 있으므로 비례 조정이 모든 크기에서 동일한 판정을 보장하지는 않습니다.
 
 빈 행이 남으면 `05-row-decisions.png`와 행별 `inkRatio`를 먼저 확인하세요. 임계값을 올리면 더 많은 행이 제거되며, 작은 필기를 놓칠 가능성도 커집니다. 양식별 기준을 정한 후 사용하는 것이 좋습니다.
+
+[성능·메모리 검증](docs/PERFORMANCE.md)에 단일 실행과 반복·병렬 실행의 실측 및 한계를 기록했습니다.
 
 ## 적용 범위와 검증
 

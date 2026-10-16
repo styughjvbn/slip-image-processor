@@ -5,6 +5,8 @@ import kr.co.slip.api.SlipImageProcessor;
 import kr.co.slip.api.ProcessingResult;
 
 import kr.co.slip.api.ProcessingOptions;
+import kr.co.slip.api.OutputMode;
+import kr.co.slip.api.ProcessingRejectedException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.*;
@@ -18,8 +20,6 @@ import java.util.zip.*;
 public class SlipController {
     private final SlipImageProcessor processor;
     private final ObjectMapper mapper;
-    // Image processing is CPU/native-memory intensive. Bound concurrent requests per JVM.
-    private final java.util.concurrent.Semaphore slots = new java.util.concurrent.Semaphore(2);
     public SlipController(SlipImageProcessor processor, ObjectMapper mapper) { this.processor = processor; this.mapper = mapper; }
 
     @PostMapping(value = "/process", consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = "application/zip")
@@ -27,24 +27,28 @@ public class SlipController {
             @RequestParam(defaultValue = "true") boolean ignoreRepeatedPrint,
             @RequestParam(defaultValue = "2") int protectedTopRows,
             @RequestParam(defaultValue = "-1") int rotationDegrees,
-            @RequestParam(defaultValue = "2200") int maxDimension) throws IOException {
-        if (!slots.tryAcquire()) return ResponseEntity.status(429).header("Retry-After", "5").build();
-        try {
-            ProcessingOptions defaults = ProcessingOptions.defaults();
-            ProcessingResult result = processor.process(file.getBytes(), new ProcessingOptions(maxDimension,
-                    protectedTopRows, ignoreRepeatedPrint, defaults.minimumInkRatio(), defaults.minimumComponentArea(), rotationDegrees));
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            try (ZipOutputStream zip = new ZipOutputStream(buffer)) {
-                zip.putNextEntry(new ZipEntry("report.json"));
-                zip.write(mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(result.report()));
-                zip.closeEntry();
-                for (var image : result.images().entrySet()) {
-                    zip.putNextEntry(new ZipEntry(image.getKey())); zip.write(image.getValue()); zip.closeEntry();
-                }
+            @RequestParam(defaultValue = "2200") int maxDimension,
+            @RequestParam(defaultValue = "ALL") OutputMode outputMode) throws IOException {
+        ProcessingOptions defaults = ProcessingOptions.defaults();
+        ProcessingResult result = processor.process(file.getBytes(), new ProcessingOptions(maxDimension,
+                protectedTopRows, ignoreRepeatedPrint, defaults.minimumInkRatio(), defaults.minimumComponentArea(), rotationDegrees, outputMode));
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(buffer)) {
+            zip.putNextEntry(new ZipEntry("report.json"));
+            zip.write(mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(result.report()));
+            zip.closeEntry();
+            for (var image : result.images().entrySet()) {
+                zip.putNextEntry(new ZipEntry(image.getKey())); zip.write(image.getValue()); zip.closeEntry();
             }
-            return ResponseEntity.ok().header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=slip-result.zip")
-                    .contentType(MediaType.parseMediaType("application/zip")).body(buffer.toByteArray());
-        } finally { slots.release(); }
+        }
+        return ResponseEntity.ok().header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=slip-result.zip")
+                .contentType(MediaType.parseMediaType("application/zip")).body(buffer.toByteArray());
+    }
+
+    @ExceptionHandler(ProcessingRejectedException.class)
+    ResponseEntity<ProblemDetail> busy(ProcessingRejectedException error) {
+        return ResponseEntity.status(429).header("Retry-After", "5")
+                .body(ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS, error.getMessage()));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

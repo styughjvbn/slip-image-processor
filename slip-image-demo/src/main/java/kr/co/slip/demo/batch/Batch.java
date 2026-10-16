@@ -1,7 +1,10 @@
 package kr.co.slip.demo.batch;
 
-import kr.co.slip.api.SlipImageProcessor;
-import kr.co.slip.opencv.SlipProcessor;
+import kr.co.slip.api.*;
+import kr.co.slip.opencv.SlipProcessors;
+import java.time.Duration;
+import java.util.concurrent.*;
+import java.util.concurrent.locks.LockSupport;
 
 import kr.co.slip.api.ProcessingResult;
 
@@ -15,36 +18,58 @@ public final class Batch {
     private Batch() {}
     public static void run(String[] args) throws Exception {
         int maxDimension = ProcessingOptions.defaults().maxDimension();
+        int workers = 2, queueCapacity = 4, openCvThreads = 1;
+        OutputMode outputMode = OutputMode.ALL;
         List<String> positional = new ArrayList<>();
         for (String arg : args) {
             if (arg.startsWith("--max-dimension=")) maxDimension = Integer.parseInt(arg.substring("--max-dimension=".length()));
+            else if (arg.startsWith("--workers=")) workers = Integer.parseInt(arg.substring("--workers=".length()));
+            else if (arg.startsWith("--queue-capacity=")) queueCapacity = Integer.parseInt(arg.substring("--queue-capacity=".length()));
+            else if (arg.startsWith("--opencv-threads=")) openCvThreads = Integer.parseInt(arg.substring("--opencv-threads=".length()));
+            else if (arg.startsWith("--output-mode=")) outputMode = OutputMode.valueOf(arg.substring("--output-mode=".length()));
             else positional.add(arg);
         }
         args = positional.toArray(String[]::new);
-        ProcessingOptions options = ProcessingOptions.defaults().withMaxDimension(maxDimension);
+        ProcessingOptions options = ProcessingOptions.defaults().withMaxDimension(maxDimension).withOutputMode(outputMode);
+        ExecutionSettings execution = new ExecutionSettings(workers, queueCapacity, Duration.ofSeconds(30));
         Path input = Path.of(args.length > 1 ? args[1] : "raw-data").toAbsolutePath().normalize();
         Path output = Path.of(args.length > 2 ? args[2] : "output").toAbsolutePath().normalize();
         if (!Files.isDirectory(input)) throw new IllegalArgumentException("Input directory does not exist: " + input);
         if (output.startsWith(input) || input.startsWith(output)) throw new IllegalArgumentException("Input and output directories must be separate");
         Files.createDirectories(output);
-        SlipImageProcessor processor = new SlipProcessor();
         ObjectMapper mapper = new ObjectMapper();
         Map<String, Integer> rotations = args.length > 3 ? readRotations(Path.of(args[3]), mapper) : Map.of();
         List<Map<String, Object>> summary = new ArrayList<>();
         int failures = 0;
+        List<Path> paths;
         try (var files = Files.list(input)) {
-            for (Path path : files.filter(Files::isRegularFile).sorted().toList()) {
-                String name = path.getFileName().toString();
-                if (!name.toLowerCase(Locale.ROOT).matches(".*\\.(jpg|jpeg|png|bmp|tif|tiff)$")) continue;
-                long start = System.nanoTime();
+            paths = files.filter(Files::isRegularFile).filter(path -> path.getFileName().toString()
+                    .toLowerCase(Locale.ROOT).matches(".*\\.(jpg|jpeg|png|bmp|tif|tiff)$")).sorted().toList();
+        }
+        int window = Math.addExact(workers, queueCapacity);
+        BlockingQueue<Completed> completed = new ArrayBlockingQueue<>(window);
+        Iterator<Path> pending = paths.iterator();
+        int inFlight = 0;
+        try (ManagedSlipImageProcessor processor = SlipProcessors.bounded(execution, openCvThreads)) {
+            while (pending.hasNext() || inFlight > 0) {
+                while (pending.hasNext() && inFlight < window) {
+                    Path path = pending.next();
+                    String name = path.getFileName().toString();
+                    long start = System.nanoTime();
+                    submit(processor, path, options.withRotation(rotations.getOrDefault(name, -1)))
+                            .whenComplete((result, failure) -> completed.add(new Completed(path, start, result, failure)));
+                    inFlight++;
+                }
+                Completed item = completed.take();
+                inFlight--;
+                String name = item.path().getFileName().toString();
                 try {
-                    if (Files.size(path) > 20 * 1024 * 1024) throw new IllegalArgumentException("Input exceeds 20 MiB");
-                    ProcessingResult result = processor.process(Files.readAllBytes(path),
-                            options.withRotation(rotations.getOrDefault(name, -1)));
+                    if (item.failure() != null) throw new CompletionException(item.failure());
+                    ProcessingResult result = item.result();
                     Path directory = output.resolve(name); // retain extension to avoid stem collisions
                     Files.createDirectories(directory);
                     try (var prior = Files.list(directory)) {
-                        for (Path artifact : prior.filter(p -> p.getFileName().toString().matches("(?:table-\\d+-compacted|paper-\\d+)\\.png")).toList())
+                        for (Path artifact : prior.filter(p -> p.getFileName().toString().matches("(?:0[1-7]-[a-z-]+|table-\\d+-compacted|paper-\\d+)\\.png")).toList())
                             Files.deleteIfExists(artifact);
                     }
                     for (var image : result.images().entrySet()) Files.write(directory.resolve(image.getKey()), image.getValue());
@@ -55,7 +80,7 @@ public final class Batch {
                             "rotationDegrees", result.report().rotation().clockwiseDegrees(),
                             "rotationMode", result.report().rotation().mode(),
                             "papers", result.report().papers().size(),
-                            "milliseconds", (System.nanoTime() - start) / 1_000_000));
+                            "milliseconds", (System.nanoTime() - item.start()) / 1_000_000));
                     System.out.printf("%s tables=%d removed=%d correction=%s%n", name, result.report().tables().size(), removed, result.report().correction());
                 } catch (Exception e) {
                     failures++;
@@ -64,9 +89,30 @@ public final class Batch {
                 }
             }
         }
+        summary.sort(Comparator.comparing(item -> item.get("file").toString()));
         mapper.writerWithDefaultPrettyPrinter().writeValue(output.resolve("summary.json").toFile(), summary);
         writeGallery(output, summary);
         if (failures > 0) throw new IllegalStateException(failures + " image(s) failed; see summary.json");
+    }
+
+
+    private record Completed(Path path, long start, ProcessingResult result, Throwable failure) {}
+
+    private static CompletableFuture<ProcessingResult> submit(ManagedSlipImageProcessor processor, Path path,
+                                                             ProcessingOptions options) throws InterruptedException {
+        for (;;) {
+            try {
+                return processor.processAsync(() -> {
+                    if (Files.size(path) > 20 * 1024 * 1024) throw new IllegalArgumentException("Input exceeds 20 MiB");
+                    return Files.readAllBytes(path);
+                }, options);
+            } catch (ProcessingRejectedException busy) {
+                if (processor.status().closed()) throw busy;
+                // A completion can reach this consumer just before the worker becomes idle.
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+                LockSupport.parkNanos(1_000_000);
+            }
+        }
     }
 
     static Map<String, Integer> readRotations(Path path, ObjectMapper mapper) throws Exception {
@@ -112,7 +158,7 @@ public final class Batch {
                     .append("개 · 회전 ").append(item.get("rotationDegrees")).append("° (").append(item.get("rotationMode"))
                     .append(") · <a href=\"").append(prefix).append("report.json\">상세 JSON</a></p><div class=\"images\">");
             for (String filename : List.of("01-corrected.png", "02-lines.png", "05-row-decisions.png", "06-paper-contours.png"))
-                figure(html, prefix, filename);
+                if (Files.exists(output.resolve(name).resolve(filename))) figure(html, prefix, filename);
             html.append("</div><h3>윤곽으로 분리한 종이 (투명 배경)</h3><div class=\"images\">");
             try (var artifacts = Files.list(output.resolve(name))) {
                 for (Path artifact : artifacts.filter(p -> p.getFileName().toString().matches("paper-\\d+\\.png")).sorted().toList())
