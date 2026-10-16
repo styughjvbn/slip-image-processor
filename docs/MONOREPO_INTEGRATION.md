@@ -172,7 +172,7 @@ Docker 이미지를 검증할 때는 실제 배포 대상 Linux OS/CPU에서 Ope
 
 ## 6. Bean·업무 연결과 문서
 
-빌드 연결 후 실제 전표 이미지 유스케이스에 다음을 적용합니다. 구체적인 Java 코드와 설정은 [상세 이식 가이드](MIGRATION_GREEN_HOUSE.md)의 3절 및 4.3절 이후를 따릅니다.
+**설치가 끝났으면 [Green House 연동 가이드](MIGRATION_GREEN_HOUSE.md)의 0절을 읽고, 4.3 → 4.4 → 4.5 → 5절 순서로 진행하세요.** 추가할 파일의 위치, Bean 코드, 서비스 코드, 기존 업로드에서의 호출과 저장할 결과 종류를 해당 문서에 정리했습니다.
 
 1. `com.greenhouse.backend.sales.document`의 기술 연동 설정에서 `SlipProcessors.bounded(...)`를 `@Bean(destroyMethod="close")`으로 한 번 등록합니다.
 2. application은 공개 API를 주입받아 `process` 또는 `processAsync`로 호출합니다. 모든 입력 경로가 같은 싱글톤을 사용해야 worker·대기열 한도를 공유합니다.

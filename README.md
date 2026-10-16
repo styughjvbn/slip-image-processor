@@ -2,7 +2,7 @@
 
 사진의 문서 외곽 검출 → 원근·기울기 보정 → 표 수평·수직선 검출 → 고정 인쇄 패턴 제외 → 빈 행 제거를 구현한 프로젝트입니다. 이미지 연산은 **Java OpenCV만** 사용합니다. Python, OCR, 딥러닝 모델, 외부 이미지 API는 사용하지 않습니다.
 
-**Green House에는 [같은 GitHub 저장소에 소스 모듈을 포함하는 방식](docs/MONOREPO_INTEGRATION.md)으로 이식합니다.** Bean·업무 연결은 [상세 이식 가이드](docs/MIGRATION_GREEN_HOUSE.md)를 따릅니다.
+**Green House에서 실제로 사용하는 방법은 [Green House 연동 가이드](docs/MIGRATION_GREEN_HOUSE.md)를 보세요.** 설치를 마쳤다면 그 문서의 **4.3 → 4.4 → 4.5 → 5절** 순서로 Bean 등록·서비스 호출·결과 저장을 연결하면 됩니다. 모듈을 처음 복사·연결할 때만 [Ubuntu 설치 가이드](docs/MONOREPO_INTEGRATION.md)를 먼저 따릅니다.
 
 기본 운영 방식은 **Green House 안의 Gradle 하위 모듈**입니다. 이후 코어와 사용하는 코드를 같은 저장소에서 함께 수정·검증합니다. 별도 패키지 배포나 GitHub Packages 인증은 필요하지 않습니다.
 

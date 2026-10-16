@@ -1,5 +1,38 @@
 # Green House 전표 이미지 처리 이식 가이드
 
+## 0. Green House에서 사용하려면 여기부터
+
+**설치 스크립트를 이미 실행했다면 이 문서의 4.3절부터 진행하면 됩니다.** 스크립트는 Gradle 의존성 연결까지 수행하며, Spring Bean 등록과 기존 전표 업로드 코드에서의 호출은 아래 절차로 추가합니다.
+
+| 순서 | Green House에서 할 일 | 이 문서의 위치 |
+|---|---|---|
+| 1 | `SlipImageConfiguration.java` 추가: 실행기를 Spring 싱글톤 Bean으로 등록 | 4.3절 |
+| 2 | `DocumentImagePreparationService.java` 추가 또는 기존 application에 처리 코드 통합 | 4.4절 |
+| 3 | 기존 업로드 담당 코드에서 서비스를 주입받아 호출 | 4.5절 |
+| 4 | 결과 PNG를 기존 저장소에 저장하고 기존 응답에 파일 정보를 연결 | 5절·6절 |
+| 5 | Ubuntu에서 테스트·기동·실제 사진 처리 확인 | 9절 |
+
+새 클래스 두 개를 추가하는 경우 위치는 다음과 같습니다. 기존 업로드 유스케이스가 같은 책임을 이미 갖고 있다면 4.4절의 코드를 그 유스케이스에 합쳐도 됩니다.
+
+```text
+green-house/backend/src/main/java/com/greenhouse/backend/
+└─ sales/document/
+   ├─ integration/image/SlipImageConfiguration.java
+   └─ application/DocumentImagePreparationService.java
+```
+
+호출 흐름:
+
+```text
+기존 이미지 업로드 코드
+  → DocumentImagePreparationService.prepare(원본 바이트, 회전)
+  → Spring에 등록한 이미지 처리 실행기
+  → ProcessingResult(PNG 바이트 Map + 판정 보고서)
+  → 기존 파일 저장소·기존 응답
+```
+
+아직 모듈을 설치하지 않았다면 [Ubuntu 소스 모듈 설치 가이드](MONOREPO_INTEGRATION.md)를 먼저 따릅니다. 성능·메모리 수치는 [PERFORMANCE.md](PERFORMANCE.md), 실제 검증 범위는 [VALIDATION.md](../VALIDATION.md)에서 확인합니다. 이번 연동의 기본 참고 문서는 **현재 문서**입니다.
+
 ## 1. 적용 기준과 범위
 
 사용자가 제공한 아키텍처와 `styughjvbn/green-house`의 main 커밋 `6c4232158939b4eabc8511889514bbcef63f76aa`를 기준으로 작성했습니다. 실제 backend는 Java 21·Spring Boot 4.1.0·Gradle Kotlin DSL이며 루트 패키지는 `com.greenhouse.backend`입니다. 아래 업무 연결 코드는 적용 예시이며, 호스트의 `ApiResponse`, `ErrorResponse`, 보안·파일 저장소의 실제 계약에 맞춰 연결해야 합니다. 빌드 연결과 업무 API 통합 검증은 별개입니다.
@@ -87,7 +120,7 @@ Gradle은 `settings.gradle(.kts)`에 코어 경로를 include하고 앱이 `impl
 
 ### 4.3 호스트가 Bean 등록
 
-`sales/document/integration/image/SlipImageConfiguration.java` 예시입니다.
+Green House에 `backend/src/main/java/com/greenhouse/backend/sales/document/integration/image/SlipImageConfiguration.java`를 추가합니다. 아래 코드는 그대로 등록할 수 있는 구성 예시이며 기본 worker 2개·대기열 4개·OpenCV 내부 스레드 1개를 사용합니다.
 
 ```java
 package com.greenhouse.backend.sales.document.integration.image;
@@ -122,6 +155,8 @@ OpenCV 스레드 설정은 JVM 전체에 영향을 줍니다. 이 라이브러�
 ### 4.4 application에서 사용
 
 아래 서비스는 출력 정책과 설정을 소유합니다. 이미 전표 준비 유스케이스가 있다면 해당 application에 합치고 별도 전달 서비스를 만들 필요는 없습니다. 호스트에 별도 Executor나 Semaphore를 복제하지 않습니다.
+
+새 서비스로 추가한다면 위치는 `backend/src/main/java/com/greenhouse/backend/sales/document/application/DocumentImagePreparationService.java`입니다.
 
 ```java
 package com.greenhouse.backend.sales.document.application;
@@ -177,6 +212,42 @@ sales:
 ```
 
 요청별 크기 선택이 필요하면 HTTP 계약에서 800–3000을 검증하고 `defaults.withMaxDimension(requested)`를 사용합니다. 위 예시는 서버 설정으로 크기를 고정하고 회전만 호출 인수로 받습니다.
+
+### 4.5 기존 업로드 코드에서 호출
+
+기존 업로드를 담당하는 Controller 또는 application 클래스의 **생성자 인수에 `DocumentImagePreparationService`를 추가**하고 필드로 보관합니다. 기존 생성자와 의존성은 유지합니다.
+
+```java
+// 기존 업로드 담당 클래스의 필드
+private final DocumentImagePreparationService imagePreparationService;
+
+// 기존 생성자에서 주입받은 인수를 보관
+// this.imagePreparationService = imagePreparationService;
+```
+
+업로드받은 `MultipartFile file`을 처리하는 기존 메서드 안에서는 다음처럼 호출합니다. `imagePreparationService`는 생성자 주입한 필드이며, 새 Controller나 endpoint를 가정한 코드는 아닙니다.
+
+```java
+ProcessingResult result = imagePreparationService.prepare(file.getBytes(), -1);
+
+// 전체 문서의 회전·원근을 보정한 PNG
+byte[] correctedPng = result.images().get("01-corrected.png");
+
+// 표마다 빈 행을 제거한 PNG: 검출된 표 개수에 따라 존재
+var compactedTables = result.images().entrySet().stream()
+        .filter(entry -> entry.getKey().startsWith("table-")
+                && entry.getKey().endsWith("-compacted.png"))
+        .toList();
+
+// 검출된 전표별 PNG와 판정 보고서는 result.images()/report()에서 사용
+var report = result.report();
+```
+
+필요한 import는 `kr.co.slip.api.ProcessingResult`와 `com.greenhouse.backend.sales.document.application.DocumentImagePreparationService`입니다. 회전 인수 `-1`은 자동, `0/90/180/270`은 시계 방향 수동 회전입니다.
+
+여기서 기존 파일 저장 코드에 `correctedPng` 또는 선택한 표/종이 PNG 바이트를 전달하고, 저장 후 반환된 파일 ID·URL을 기존 응답에 연결합니다. **빈 행을 제거한 결과가 필요하면 `01-corrected.png`가 아니라 `table-XX-compacted.png`를 사용**합니다. 종이를 각각 분리한 결과는 `paper-XX.png`입니다. 해당 표·종이가 검출되지 않았다면 그 파일은 없으므로 고정 파일명 하나의 존재를 전제하지 않습니다.
+
+원본 파일과 결과 파일은 각각의 저장 정책을 정하고 처리 결과로 원본을 덮어쓰지 않습니다. 처리·저장·응답이 연결되기 전에는 이 라이브러리를 추가한 것만으로 기존 화면이나 전표 생성 동작이 바뀌지 않습니다.
 
 ## 5. HTTP·저장·트랜잭션 연결
 
@@ -297,13 +368,22 @@ Java 21, 호스트 OS/CPU에 맞는 OpenCV 네이티브 라이브러리와 추�
 
 권장 검증 순서:
 
-1. 이 저장소에서 `mvnw test package` 실행. `slip-image-core`는 일반 JAR, `slip-image-demo`만 실행 JAR인지 확인.
+1. Ubuntu의 Green House `backend`에서 아래 테스트·패키징 명령 실행. 앱과 코어가 함께 빌드되는지 확인.
 2. backend의 기존 빌드로 코어 의존성 해석과 `SlipImageProcessor` Bean 등록 확인. 호스트 Boot/JDK 버전은 유지.
 3. 호스트에서 실제 이미지 한 장의 원근·표·종이 PNG와 경고를 확인. 800/1100/1600/2200/3000 해상도와 수동 회전, 검출 실패 시 원본 유지도 검사.
 4. 기존 `ModularArchitectureTests`, `ModuleBoundaryInventoryTest` 실행. 공개 중첩 타입·generic·정확한 메서드 호출·구현 접근 위치까지 확인.
 5. 공통 envelope·오류 코드, 인증·전표 접근권한·데모 제한, 업로드 제한과 429 처리 확인. 실제 저장을 추가했다면 저장 실패·감사 rollback·중복 요청·파일 정리를 별도 검증.
 6. 기존 OpenAPI/TypeScript 생성·frontend 검사 실행.
 7. 실제 Docker/배포 이미지에서 native 로딩, 임시 경로, 업로드 한도, 동시 실행 1~2건의 RSS·native 메모리·응답 시간을 확인. `-Xmx`는 native Mat 메모리까지 제한하지 않습니다.
+
+```bash
+cd /실제/green-house/경로/backend
+./gradlew :slip-image-core:test check bootJar --no-daemon
+# 이후 기존 Green House 개발 환경 설정으로 기동
+APP_ENV=dev ./gradlew bootRun
+```
+
+빌드 성공 후 기존 업로드 경로로 사진 한 장을 보내고, 결과 PNG가 실제 저장·조회되는지 확인해야 업무 연동까지 완료됩니다. 코어 테스트 통과는 호스트의 업로드·저장·권한 계약 검증을 대신하지 않습니다.
 
 기존 알고리즘의 한계는 유지됩니다. 3장 겹침은 일반화 검증되지 않았고, 세로 경계로 좌우 겹친 종이를 분할하는 로직은 없습니다. 회전 자동 판정, 반복 인쇄와 반복 필기의 구분, 흐린 잉크에는 검토가 필요합니다. 이번 구조 변경은 이 검출 범위를 확대하지 않습니다.
 
