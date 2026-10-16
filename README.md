@@ -2,7 +2,20 @@
 
 사진의 문서 외곽 검출 → 원근·기울기 보정 → 표 수평·수직선 검출 → 고정 인쇄 패턴 제외 → 빈 행 제거를 구현한 프로젝트입니다. 이미지 연산은 **Java OpenCV만** 사용합니다. Python, OCR, 딥러닝 모델, 외부 이미지 API는 사용하지 않습니다.
 
-**Green House 이식 절차는 [이식 가이드](docs/MIGRATION_GREEN_HOUSE.md)에 있습니다.**
+**Green House에는 [같은 GitHub 저장소에 소스 모듈을 포함하는 방식](docs/MONOREPO_INTEGRATION.md)으로 이식합니다.** Bean·업무 연결은 [상세 이식 가이드](docs/MIGRATION_GREEN_HOUSE.md)를 따릅니다.
+
+기본 운영 방식은 **Green House 안의 Gradle 하위 모듈**입니다. 이후 코어와 사용하는 코드를 같은 저장소에서 함께 수정·검증합니다. 별도 패키지 배포나 GitHub Packages 인증은 필요하지 않습니다.
+
+Ubuntu에서 이 이미지 처리 저장소와 Green House 소스를 준비한 뒤, 이 저장소에서 실행합니다. 대상에 이미 코어 모듈이 있으면 덮어쓰지 않고 중단합니다.
+
+```bash
+bash scripts/install-green-house-module.sh "$HOME/work/green-house"
+
+cd "$HOME/work/green-house/backend"
+./gradlew :slip-image-core:test check bootJar --no-daemon
+```
+
+스크립트는 소스·테스트 복사와 Gradle·Docker 빌드 설정을 적용합니다. Bean·업무 호출 연결은 상세 가이드를 따라 추가하고, 관련 변경을 Green House에 함께 커밋합니다. Windows용 보조 스크립트는 `scripts/Install-GreenHouseModule.ps1`입니다.
 
 ```text
 slip-image-core/   Spring 의존성이 없는 일반 JAR: 공개 API + OpenCV 구현
@@ -10,7 +23,7 @@ slip-image-demo/   Spring Boot 서버, 개발용 ZIP API, 배치 실행·갤러�
 docs/             대상 아키텍처에 맞춘 배치·설정·연동 가이드
 ```
 
-호스트 프로젝트에는 `slip-image-core`만 의존성으로 추가합니다. 공개 계약은 `kr.co.slip.api.ManagedSlipImageProcessor`이며 `kr.co.slip.opencv.SlipProcessors.bounded()`로 생성한 제한된 실행기를 호스트가 싱글톤 Bean으로 등록합니다. Spring 종료 시 `close()`를 연결합니다. 기존 패키지·실행 JAR 경로의 변경 사항도 가이드에 정리했습니다.
+호스트 GitHub 저장소에 `slip-image-core`의 소스·빌드 설정을 포함하고 backend가 프로젝트 의존성으로 참조합니다. 코어에는 독립 Maven POM과 Gradle Java library 설정을 제공합니다. 공개 계약은 `kr.co.slip.api.ManagedSlipImageProcessor`이며 `kr.co.slip.opencv.SlipProcessors.bounded()`로 생성한 제한된 실행기를 호스트가 싱글톤 Bean으로 등록합니다. Spring 종료 시 `close()`를 연결합니다. 기존 패키지·실행 JAR 경로의 변경 사항도 가이드에 정리했습니다.
 
 ## 실행
 
@@ -19,7 +32,7 @@ JDK 21이 필요합니다. 처음 빌드할 때 Maven Central 연결이 필요�
 ```powershell
 .\mvnw.cmd test package
 
-# 이식용 일반 JAR과 부모 POM을 로컬 Maven 저장소에 설치
+# 선택: 같은 PC의 독립 소비 프로젝트에서 확인할 때만 로컬 설치
 .\mvnw.cmd -pl slip-image-core -am install
 
 # raw-data의 이미지 일괄 처리; 원본은 변경하지 않음
@@ -150,7 +163,7 @@ java -Xmx1200m -jar slip-image-demo/target/slip-image-processor-1.0.0.jar --batc
 
 ## 기존 Spring Boot 프로젝트에서 사용
 
-**권장 이식 대상은 Spring 의존성이 없는 `kr.co.slip:slip-image-core:1.0.0` 일반 JAR입니다.** 공개 계약은 `kr.co.slip.api`, 실행 제어는 `kr.co.slip.execution`, OpenCV 구현은 `kr.co.slip.opencv`에 있습니다. 호스트에서 `SlipProcessors.bounded()`를 Bean으로 등록하고 종료 시 `close()`를 호출합니다. 소스 복사 방식과 Green House 기능별 배치는 [이식 가이드](docs/MIGRATION_GREEN_HOUSE.md)를 따릅니다. OpenPnP 패키지는 OpenCV Java API와 운영체제별 네이티브 라이브러리를 묶어 배포하며, 픽셀 처리는 `org.opencv` API가 수행합니다. 현재 샘플 앱의 Spring Boot 버전은 3.5.0입니다. 호스트의 Spring Boot 버전을 유지하며 데모 서버·Controller·설정을 이식할 필요는 없습니다.
+**권장 방식은 Spring 의존성이 없는 코어 소스 모듈을 같은 GitHub 저장소에 포함해 함께 빌드하는 것입니다.** 결과물은 일반 JAR입니다. 공개 계약은 `kr.co.slip.api`, 실행 제어는 `kr.co.slip.execution`, OpenCV 구현은 `kr.co.slip.opencv`에 있습니다. 호스트에서 `SlipProcessors.bounded()`를 Bean으로 등록하고 종료 시 `close()`를 호출합니다. 소스 복사 방식과 Green House 기능별 배치는 [이식 가이드](docs/MIGRATION_GREEN_HOUSE.md)를 따릅니다. OpenPnP 패키지는 OpenCV Java API와 운영체제별 네이티브 라이브러리를 묶어 배포하며, 픽셀 처리는 `org.opencv` API가 수행합니다. 현재 샘플 앱의 Spring Boot 버전은 3.5.0입니다. 호스트의 Spring Boot 버전을 유지하며 데모 서버·Controller·설정을 이식할 필요는 없습니다.
 
 ```java
 ProcessingResult result = processor.process(imageBytes, ProcessingOptions.defaults());

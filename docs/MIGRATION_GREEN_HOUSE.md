@@ -2,11 +2,11 @@
 
 ## 1. 적용 기준과 범위
 
-사용자가 제공한 Green House 아키텍처(모듈러 모놀리스, Java 21, Spring Boot, Sales 기능 우선 배치)를 기준으로 작성했습니다. 대상 저장소의 실제 소스·빌드 파일·루트 패키지는 제공되지 않았습니다. 아래 `com.example.greenhouse`는 **대상 프로젝트의 실제 루트 패키지로 바꾸는 예시**이며, 호스트의 `ApiResponse`, `ErrorResponse`, 보안 설정, 파일 저장소의 실제 생성자·메서드를 가정하지 않습니다. 대상 프로젝트 자체를 수정하거나 통합 테스트한 상태는 아닙니다.
+사용자가 제공한 아키텍처와 `styughjvbn/green-house`의 main 커밋 `6c4232158939b4eabc8511889514bbcef63f76aa`를 기준으로 작성했습니다. 실제 backend는 Java 21·Spring Boot 4.1.0·Gradle Kotlin DSL이며 루트 패키지는 `com.greenhouse.backend`입니다. 아래 업무 연결 코드는 적용 예시이며, 호스트의 `ApiResponse`, `ErrorResponse`, 보안·파일 저장소의 실제 계약에 맞춰 연결해야 합니다. 빌드 연결과 업무 API 통합 검증은 별개입니다.
 
 이 라이브러리는 사진에서 문서 외곽·회전·원근을 보정하고, 표·빈 행·관측 가능한 종이 영역을 검출합니다. OCR, 품목·금액 추출, 판매 전표 생성, 예약·출고·입금·감사 저장은 하지 않습니다. 처리 결과를 판매 사실이나 자동 확정 입력으로 취급하지 않습니다.
 
-**권장 방식은 `slip-image-core` 일반 JAR을 기존 backend가 의존하는 것**입니다. 별도 이미지 서버, 새로운 업무 모듈, Next.js에서의 OpenCV 실행은 필요하지 않습니다. 현재 데모의 ZIP API는 개발 검증용으로 남기고, Green House에서는 기존 Sales의 HTTP·공통 응답·인증 체계를 사용합니다.
+**권장 방식은 Green House GitHub 저장소에 `slip-image-core` 소스 모듈을 포함하고 backend가 같은 빌드의 프로젝트 의존성으로 연결하는 것**입니다. [GitHub 저장소 내 모듈 이식 절차](MONOREPO_INTEGRATION.md)를 먼저 읽으세요. 로컬 Maven install이나 사설 패키지 저장소가 전제되지 않습니다. 별도 이미지 서버, 새로운 업무 모듈, Next.js에서의 OpenCV 실행은 필요하지 않습니다. 현재 데모의 ZIP API는 개발 검증용으로 남기고, Green House에서는 기존 Sales의 HTTP·공통 응답·인증 체계를 사용합니다.
 
 ## 2. 변경된 저장소 구조
 
@@ -71,52 +71,26 @@ green-house/backend/src/main/java/<실제 루트 패키지>/
 - 파일 소유권·조회 권한·전표 연결은 Sales가 결정합니다. 이 라이브러리가 Farm Entity, Sales Repository, Payment 원장 또는 Audit를 호출하지 않습니다.
 - 기존 `ModularArchitectureTests`와 `ModuleBoundaryInventoryTest`가 검토하는 정확한 타입·메서드 목록을 확인합니다. 외부 라이브러리 추가 때문에 `sales..`나 `integration..` 전체를 검사 예외로 만들지 않습니다.
 
-## 4. 권장 이식: 일반 JAR 의존
+## 4. 권장 이식: GitHub 저장소에 소스 모듈 포함
 
-### 4.1 라이브러리 빌드·로컬 설치
+### 4.1 복사할 코어
 
-이 저장소 루트에서 JDK 21로 실행합니다.
+`slip-image-core/src`와 사용하는 빌드 파일을 Green House의 `backend/modules/slip-image-core` 같은 경로에 복사하고 Git에 함께 커밋합니다. `pom.xml`은 이 저장소 부모 POM 없이 독립 빌드할 수 있고, `build.gradle.kts`도 제공됩니다. 데모 서버·사진·출력·빌드 산출물은 복사하지 않습니다.
 
-```powershell
-# 전체 회귀 검증 및 데모 포함 빌드
-.\mvnw.cmd test package
+### 4.2 같은 빌드에서 연결
 
-# backend에서 참조할 코어와 부모 POM을 로컬 Maven 저장소에 설치
-.\mvnw.cmd -pl slip-image-core -am install
-```
+Gradle은 `settings.gradle(.kts)`에 코어 경로를 include하고 앱이 `implementation(project(":slip-image-core"))`로 참조합니다. Maven은 집계 POM의 modules에 코어와 backend를 포함하고 backend가 코어 좌표에 의존하도록 구성합니다. `jar`인 기존 앱 POM을 무조건 집계 POM으로 바꾸지 않습니다.
 
-이식할 아티팩트는 `slip-image-core/target/slip-image-core-1.0.0.jar`입니다. 이것은 Spring Boot 실행 JAR이 아닌 **일반 JAR**이며 `BOOT-INF`가 없습니다. 부모 POM은 빌드 메타데이터이고 호스트의 Spring Boot 버전을 강제로 변경하지 않습니다.
+실제 settings/POM, CI 및 Docker의 빌드 진입점에 맞춘 예시는 [저장소 내 이식 가이드](MONOREPO_INTEGRATION.md)에 있습니다. backend의 기존 Spring Boot 버전은 유지하고 기술 라이브러리에는 Boot plugin을 적용하지 않습니다. OpenPnP OpenCV는 코어의 런타임 의존성으로 함께 들어옵니다.
 
-같은 개발 PC의 backend는 기본 로컬 Maven 저장소를 사용하면 됩니다. `-Dmaven.repo.local=...`로 별도 저장소에 설치했다면 backend도 같은 위치를 사용해야 합니다. 다른 개발자·CI·배포 빌드에서는 코어 JAR과 POM, 부모 POM을 팀 Maven 저장소에 배포하거나 같은 Maven reactor에 포함하세요. 현재 작업 PC의 로컬 설치만으로 CI가 의존성을 찾을 수 있는 것은 아닙니다.
-
-### 4.2 backend 의존성
-
-Maven 사용 시 backend의 기존 `pom.xml`에 의존성만 추가합니다. 이 저장소의 부모 POM이나 Spring Boot 버전을 backend의 부모로 복사하지 않습니다.
-
-```xml
-<dependency>
-  <groupId>kr.co.slip</groupId>
-  <artifactId>slip-image-core</artifactId>
-  <version>1.0.0</version>
-</dependency>
-```
-
-대상이 Gradle이라면 기존 repository 설정에 로컬 테스트용 `mavenLocal()`을 추가하고 다음 좌표를 사용합니다. 운영 CI는 팀 아티팩트 저장소를 사용합니다.
-
-```kotlin
-dependencies {
-    implementation("kr.co.slip:slip-image-core:1.0.0")
-}
-```
-
-OpenPnP `org.openpnp:opencv:4.9.0-0`은 전이 의존성으로 들어옵니다. JAR 파일 하나만 수동 복사하면 OpenCV 의존성을 잃기 쉬우므로 Maven/Gradle 좌표 사용을 권장합니다. 실제 호스트의 dependency management가 다른 OpenCV 버전을 선택하는지도 확인합니다. Boot Web·JPA·Lombok·DB 의존성을 이 라이브러리 때문에 추가할 필요는 없습니다.
+`mvn install`로 로컬 저장소에 설치하는 방식은 별도 개발 확인 용도로는 쓸 수 있지만 같은 PC에만 적용됩니다. 이번 GitHub 소스 포함 방식에서는 개발자·CI 모두 reactor/project 의존성으로 코어를 함께 빌드하므로 install이나 사설 패키지 배포가 필요하지 않습니다. 여러 프로젝트에 독립 버전으로 배포해야 하는 요구가 생기면 원격 아티팩트 저장소를 별도로 검토합니다.
 
 ### 4.3 호스트가 Bean 등록
 
 `sales/document/integration/image/SlipImageConfiguration.java` 예시입니다.
 
 ```java
-package com.example.greenhouse.sales.document.integration.image;
+package com.greenhouse.backend.sales.document.integration.image;
 
 import java.time.Duration;
 import kr.co.slip.api.ExecutionSettings;
@@ -150,7 +124,7 @@ OpenCV 스레드 설정은 JVM 전체에 영향을 줍니다. 이 라이브러�
 아래 서비스는 출력 정책과 설정을 소유합니다. 이미 전표 준비 유스케이스가 있다면 해당 application에 합치고 별도 전달 서비스를 만들 필요는 없습니다. 호스트에 별도 Executor나 Semaphore를 복제하지 않습니다.
 
 ```java
-package com.example.greenhouse.sales.document.application;
+package com.greenhouse.backend.sales.document.application;
 
 import kr.co.slip.api.*;
 import org.springframework.beans.factory.annotation.Value;
@@ -210,7 +184,7 @@ sales:
 
 데모의 `/api/slips/process`, `ProblemDetail`, `ResponseEntity<byte[]>` ZIP 응답과 localhost 포트 설정을 그대로 이식하지 않습니다. 기존 Sales의 인증·인가·ROLE_DEMO 제한, `ApiResponse`/`ErrorResponse`, 공통 filter 실패 writer를 유지합니다.
 
-구체적인 endpoint·파일 저장소는 호스트 코드가 없어 여기서 확정하지 않습니다. 기본 연결 순서는 다음과 같습니다.
+새 endpoint·파일 저장 계약은 이번 소스 모듈 연결 범위에서 확정하지 않습니다. 기본 연결 순서는 다음과 같습니다.
 
 1. Controller에서 인증·인가, multipart 크기·파라미터 검증을 수행합니다. 기존 전표에 연결한다면 이미지 처리 전에 접근 권한을 확인합니다.
 2. 원본 바이트와 회전 옵션을 Document application에 전달합니다. `MultipartFile`을 코어 API나 다른 모듈의 공개 계약에 전달하지 않습니다.
@@ -289,7 +263,7 @@ var tables = result.report().tables();
 
 ## 7. 소스 복사로 이식해야 할 때
 
-아티팩트 의존을 추가하기 어려울 때만 선택합니다. **코어의 main 소스 전체와 test 소스만** 복사하고 데모·루트 실행 클래스·application.yml·부모 POM은 복사하지 않습니다.
+소스 모듈을 별도로 두기 어려워 feature 패키지 안에 직접 합쳐야 할 때만 선택합니다. 권장 소스 모듈 방식과 구분합니다. **코어의 main 소스 전체와 test 소스만** 복사하고 데모·루트 실행 클래스·application.yml·부모 POM은 복사하지 않습니다.
 
 | 원본 패키지 | 대상 패키지 예시 |
 |---|---|

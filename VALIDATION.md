@@ -30,7 +30,23 @@ Windows x64, Eclipse Temurin Java 21.0.9, Spring Boot 3.5.0, OpenPnP OpenCV 4.9.
 
 패키징한 데모는 `--spring.main.web-application-type=none`으로 Spring context·Bean·native 로딩 기동을 확인했습니다. HTTP 계약은 MockMvc로 검증했습니다. 현재 샌드박스가 로컬 loopback 소켓 연결을 제한해 Tomcat 실제 포트 기동 검사는 완료하지 못했습니다. 데모 batch 코드와 갤러리 형식은 유지하며 기존 `output`은 재생성하지 않았습니다.
 
-Green House 실제 저장소·보안·공통 envelope·아키텍처 검사·Linux 배포·frontend 생성은 제공되지 않아 실행하지 않았습니다. 해당 통합 단계와 책임별 배치는 [이식 가이드](docs/MIGRATION_GREEN_HOUSE.md)에 구분했습니다.
+초기 분리 시에는 Green House 실제 저장소가 제공되지 않아 호스트 검증을 실행하지 않았습니다. 이후 실제 저장소를 확인한 검증 범위는 다음 절에 기록합니다. 보안·공통 envelope·전표 HTTP 연동·Linux native 실행 검증은 포함하지 않습니다.
+
+## GitHub 소스 모듈 이식 검증
+
+대상: `styughjvbn/green-house` main `6c4232158939b4eabc8511889514bbcef63f76aa`. Java 21, Spring Boot 4.1.0, Gradle Wrapper 9.5.1인 실제 backend 설정을 사용했습니다. 원격 저장소에는 commit/push하지 않았습니다.
+
+운영 방식은 Green House 내부 Gradle 하위 모듈로 정했습니다. Ubuntu용 `scripts/install-green-house-module.sh`를 추가하고, 호스트 원본 빌드 파일로 만든 테스트 폴더에서 Bash 구문 검사·첫 설치·기존 모듈 거부를 Git Bash로 확인했습니다. 생성한 Gradle/Docker 설정은 아래 호스트 빌드에서 검증한 설정과 동일하며 코어 main/test 소스도 바이트 단위로 일치합니다. Maven 파일·빌드 산출물은 복사하지 않습니다. 이번 추가는 설치 도구·문서·줄바꿈 설정이며 알고리즘·코어 Gradle 설정을 바꾸지 않아 전체 Java 테스트는 반복하지 않았습니다. Git Bash 검증은 실제 Ubuntu 실행 검증을 대신하지 않습니다.
+
+- 코어를 부모 POM 없는 독립 폴더에 복사해 Maven `test package`: **54개 통과**. 기존 Maven reactor의 데모 테스트 **8개 통과**, 패키징 성공.
+- 이식 스크립트를 실제 호스트 빌드 파일에 적용: settings include, project 의존성, Docker 모듈 COPY, E2E CLI classpath 평가 지연을 확인했습니다. 원본 빌드 파일에 스크립트를 새로 적용한 결과가 검증한 설정과 동일했습니다. 재실행 시 기존 모듈 덮어쓰기 거부와 빌드 파일 보존도 확인했습니다.
+- 실제 호스트 Wrapper의 `:slip-image-core:test`: **54개 통과**, 실패·오류·생략 0개.
+- 호스트 `bootJar` 생성 및 ZIP 내용 확인: `BOOT-INF/lib/slip-image-core-1.0.0.jar`, `BOOT-INF/lib/opencv-4.9.0-0.jar` 포함. 로컬 Maven install·사설 저장소 없이 연결했습니다.
+- 호스트 전체 `test bootJar`: backend 793개 중 1개 실패로 전체 명령은 실패했습니다. `bootJar`는 테스트 전에 생성됐습니다. 실패는 기존 `ModularArchitectureTests.moduleRootsAndLayersAreExplicit`이며, 변경하지 않은 Sales 파일들을 잘못 배치된 것으로 판정했습니다. 해당 검사는 `relative.getParent().toString().replace('/', '.')`로 패키지를 조립해 Windows의 `\` 구분자가 남습니다. 이식 과정에서 호스트 업무 소스나 검사를 수정하지 않았습니다.
+- `check --dry-run`: 기존 CI 명령이 앱 및 코어의 test/check를 모두 선택함을 확인했습니다. dry-run은 테스트 실행이나 Spotless 통과를 의미하지 않습니다.
+- 프런트엔드 `npm run check`는 node_modules가 없는 checkout에서 `prettier` 미설치로 중단됐습니다. 프런트엔드 코드는 변경하지 않았습니다.
+
+Windows 한글 작업 경로에서는 Gradle worker/테스트 클래스 로딩 오류가 발생해, 검증용 checkout과 Gradle 캐시를 영문 임시 경로로 옮겨 실행했습니다. 이는 이번 검증 환경의 경로 문제이며 이미지 처리 실패가 아닙니다. Docker 이미지 빌드·Linux OpenCV native 로딩·전표 업로드 API 연결은 별도 검증 대상입니다.
 
 ## 메모리·실행 제어 개선 검증
 
